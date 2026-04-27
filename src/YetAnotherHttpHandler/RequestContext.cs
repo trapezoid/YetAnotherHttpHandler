@@ -106,9 +106,13 @@ namespace Cysharp.Net.Http
                             var buffer = ArrayPool<byte>.Shared.Rent((int)result.Buffer.Length);
                             try
                             {
+                                var length = (int)result.Buffer.Length;
                                 result.Buffer.CopyTo(buffer);
-                                WriteBody(buffer.AsSpan(0, (int)result.Buffer.Length));
                                 _pipe.Reader.AdvanceTo(result.Buffer.End);
+                                if (!_cancellationTokenSource.IsCancellationRequested && !TryWriteBody(buffer.AsSpan(0, length)))
+                                {
+                                    await WriteBodySlowPathAsync(buffer.AsMemory(0, length)).ConfigureAwait(false);
+                                }
                             }
                             finally
                             {
@@ -132,16 +136,20 @@ namespace Cysharp.Net.Http
             }
         }
 
-        private void WriteBody(Span<byte> data)
+        private async ValueTask WriteBodySlowPathAsync(Memory<byte> data)
         {
             var retryInterval = 16; //ms
             var retryAfter = 0;
 
-            while (!_cancellationTokenSource.IsCancellationRequested && !TryWriteBody(data))
+            while (!_cancellationTokenSource.IsCancellationRequested)
             {
-                // TODO:
                 retryAfter += retryInterval;
-                Thread.Sleep(Math.Min(1000, retryAfter));
+                await Task.Delay(Math.Min(1000, retryAfter), _cancellationTokenSource.Token).ConfigureAwait(false);
+
+                if (TryWriteBody(data.Span))
+                {
+                    return;
+                }
             }
         }
 
